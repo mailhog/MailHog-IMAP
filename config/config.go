@@ -90,8 +90,9 @@ type ServerPolicySet struct {
 
 // Backends defines the backend configurations for a server
 type Backends struct {
-	Auth    *config.BackendConfig `json:",omitempty"`
-	Mailbox *config.BackendConfig `json:",omitempty"`
+	Auth     *config.BackendConfig `json:",omitempty"`
+	Mailbox  *config.BackendConfig `json:",omitempty"`
+	Resolver *config.BackendConfig `json:",omitempty"`
 }
 
 // DefaultPolicySet defines the default ServerPolicySet for an IMAP server

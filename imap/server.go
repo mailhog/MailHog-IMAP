@@ -9,7 +9,7 @@ import (
 
 	"github.com/mailhog/MailHog-IMAP/config"
 	"github.com/mailhog/backends/auth"
-	"github.com/mailhog/backends/delivery"
+	"github.com/mailhog/backends/mailbox"
 	"github.com/mailhog/backends/resolver"
 )
 
@@ -20,7 +20,7 @@ type Server struct {
 	PolicySet config.ServerPolicySet
 
 	AuthBackend     auth.Service
-	DeliveryBackend delivery.Service
+	MailboxBackend  mailbox.Service
 	ResolverBackend resolver.Service
 
 	tlsConfig *tls.Config

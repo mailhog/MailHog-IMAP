@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"strings"
+	"sync"
 
 	"github.com/mailhog/backends/auth"
 	"github.com/mailhog/imap"
@@ -24,13 +25,15 @@ type Session struct {
 	isTLS         bool
 	line          string
 	identity      auth.Identity
+	responseChan  chan *imap.Response
 
 	maximumBufferLength int
 }
 
 // Accept starts a new SMTP session using io.ReadWriteCloser
 func (s *Server) Accept(remoteAddress string, conn io.ReadWriteCloser) {
-	proto := imap.NewProtocol()
+	responseChan := make(chan *imap.Response)
+	proto := imap.NewProtocol(responseChan)
 	proto.Hostname = s.Hostname
 
 	session := &Session{
@@ -42,6 +45,7 @@ func (s *Server) Accept(remoteAddress string, conn io.ReadWriteCloser) {
 		line:                "",
 		identity:            nil,
 		maximumBufferLength: 2048000,
+		responseChan:        responseChan,
 	}
 
 	// FIXME this all feels nasty
@@ -58,30 +62,43 @@ func (s *Server) Accept(remoteAddress string, conn io.ReadWriteCloser) {
 	}
 
 	session.logf("Starting session")
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for r := range proto.Responses {
+			session.Write(r)
+		}
+	}()
 	session.Write(proto.Start())
 	for session.Read() == true {
 	}
+	wg.Wait()
 	io.Closer(conn).Close()
 	session.logf("Session ended")
 }
 
-func (c *Session) validateAuthentication(mechanism string, args ...string) (errorReply *imap.Reply, ok bool) {
+func (c *Session) validateAuthentication(mechanism string, args ...string) (ok bool) {
 	if c.server.AuthBackend == nil {
-		return imap.ReplyInvalidAuth(), false
+		// FIXME
+		//c.responseChan <- imap.ReplyInvalidAuth()
+		return false
 	}
 	i, e, ok := c.server.AuthBackend.Authenticate(mechanism, args...)
 	if e != nil || !ok {
 		if e != nil {
 			c.logf("error authenticating: %s", e)
 		}
-		return imap.ReplyInvalidAuth(), false
+		// FIXME
+		//c.responseChan <- imap.ReplyInvalidAuth()
+		return false
 	}
 	c.identity = i
-	return nil, true
+	return true
 }
 
 // tlsHandler handles the STARTTLS command
-func (c *Session) tlsHandler(done func(ok bool)) (errorReply *imap.Reply, callback func(), ok bool) {
+func (c *Session) tlsHandler(done func(ok bool)) (errorReply *imap.Response, callback func(), ok bool) {
 	c.logf("Returning TLS handler")
 	return nil, func() {
 		c.logf("Upgrading session to TLS")
@@ -108,6 +125,12 @@ func (c *Session) logf(message string, args ...interface{}) {
 
 // Read reads from the underlying io.Reader
 func (c *Session) Read() bool {
+	if c.proto.TLSPending && !c.proto.TLSUpgraded {
+		// this avoids reading from the socket during TLS negotation
+		// (differs from mailhog/MailHog-MTA since we use asynchronous writes via c.responseChan)
+		// XXX is there a race condition here in setting c.proto.TLSPending from TLSHandler?
+		return true
+	}
 	buf := make([]byte, 1024)
 	n, err := io.Reader(c.conn).Read(buf)
 
@@ -129,29 +152,25 @@ func (c *Session) Read() bool {
 
 	if c.maximumBufferLength > -1 && len(c.line+text) > c.maximumBufferLength {
 		// FIXME what is the "expected" behaviour for this?
-		c.Write(imap.ReplyError(fmt.Errorf("Maximum buffer length exceeded")))
+		// FIXME and should this be tagged?
+		c.Write(imap.ResponseError("*", fmt.Errorf("Maximum buffer length exceeded")))
 		return false
 	}
 
 	c.line += text
 
 	for strings.Contains(c.line, "\r\n") {
-		line, reply := c.proto.Parse(c.line)
+		line := c.proto.Parse(c.line)
 		c.line = line
 
-		if reply != nil {
-			c.Write(reply)
-			if reply.Status == 221 {
-				return false
-			}
-		}
+		// FIXME need to detect connection closed?
 	}
 
 	return true
 }
 
 // Write writes a reply to the underlying io.Writer
-func (c *Session) Write(reply *imap.Reply) {
+func (c *Session) Write(reply *imap.Response) {
 	lines := reply.Lines()
 	for _, l := range lines {
 		logText := strings.Replace(l, "\n", "\\n", -1)

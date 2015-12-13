@@ -10,6 +10,7 @@ import (
 	"github.com/mailhog/backends/auth"
 	sconfig "github.com/mailhog/backends/config"
 	"github.com/mailhog/backends/mailbox"
+	"github.com/mailhog/backends/resolver"
 )
 
 var conf *config.Config
@@ -39,7 +40,7 @@ func main() {
 }
 
 func newServer(cfg *config.Config, server *config.Server) error {
-	var a, d, r sconfig.BackendConfig
+	var a, m, r sconfig.BackendConfig
 	var err error
 
 	if server.Backends.Auth != nil {
@@ -49,20 +50,29 @@ func newServer(cfg *config.Config, server *config.Server) error {
 		}
 	}
 	if server.Backends.Mailbox != nil {
-		r, err = server.Backends.Mailbox.Resolve(cfg.Backends)
+		m, err = server.Backends.Mailbox.Resolve(cfg.Backends)
+		if err != nil {
+			return err
+		}
+	}
+	if server.Backends.Resolver != nil {
+		r, err = server.Backends.Resolver.Resolve(cfg.Backends)
 		if err != nil {
 			return err
 		}
 	}
 
+	res := resolver.Load(r, *cfg)
+
 	s := &imap.Server{
-		BindAddr:       server.BindAddr,
-		Hostname:       server.Hostname,
-		PolicySet:      server.PolicySet,
-		AuthBackend:    auth.Load(a, *cfg),
-		MailboxBackend: mailbox.Load(m, *cfg),
-		Config:         cfg,
-		Server:         server,
+		BindAddr:        server.BindAddr,
+		Hostname:        server.Hostname,
+		PolicySet:       server.PolicySet,
+		AuthBackend:     auth.Load(a, *cfg),
+		MailboxBackend:  mailbox.Load(m, *cfg, res),
+		ResolverBackend: res,
+		Config:          cfg,
+		Server:          server,
 	}
 
 	return s.Listen()
